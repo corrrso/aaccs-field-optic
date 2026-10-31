@@ -37,19 +37,28 @@
           linear-gradient(var(--y),var(--y)) bottom right/18px 2px no-repeat, linear-gradient(var(--y),var(--y)) bottom right/2px 18px no-repeat,
           linear-gradient(var(--c),var(--c)) center/10px 1px no-repeat, linear-gradient(var(--c),var(--c)) center/1px 10px no-repeat; }
 
-  footer { display:flex; flex-direction:column; gap:8px; }
-  #tele { margin:0; display:grid; grid-template-columns:auto 1fr; gap:1px 10px; font-size:10.5px; line-height:1.35;
+  footer { display:flex; flex-direction:column; gap:8px; min-width:0; }
+  #tele { margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:1px 10px; font-size:10.5px; line-height:1.35;
           background:rgba(8,8,8,.82); border-left:6px solid var(--y); padding:6px 8px; }
   #tele dt { color:var(--y); font-weight:800; }
   #tele dd { margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  #tele { pointer-events:auto; }
+  #tele.min dt:nth-of-type(n+4), #tele.min dd:nth-of-type(n+4) { display:none; }
+  .row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; }
+  .seg { display:grid; grid-template-columns:auto repeat(3,minmax(0,1fr)); gap:0; border:3px solid var(--y); background:var(--k); }
+  .seg span { color:var(--y); font-weight:800; font-size:11px; padding:0 8px; display:flex; align-items:center; border-right:3px solid var(--y); }
+  .seg .btn { border:0; min-height:42px; font-size:12px; }
+  .seg .btn + .btn { border-left:3px solid var(--y); }
+  #hint { display:none; align-self:center; background:var(--y); color:var(--k); font-weight:800; font-size:13px; padding:8px 12px; }
+  body.xr #hint { display:block; }
+  body.xr .ret { display:none; }
   .btn { pointer-events:auto; touch-action:manipulation; font:inherit; font-weight:800; font-size:13px; letter-spacing:.06em;
          text-transform:uppercase; min-height:52px; padding:0 8px; border-radius:0; cursor:pointer;
          background:var(--k); color:var(--y); border:3px solid var(--y); }
   .btn[aria-pressed="true"] { background:var(--y); color:var(--k); }
   .btn:disabled { opacity:.3; cursor:not-allowed; }
   .btn:focus-visible { outline:3px solid var(--c); outline-offset:2px; }
-  .snap { background:var(--y); color:var(--k); font-size:20px; min-height:64px; box-shadow:5px 5px 0 var(--c); }
+  .snap { background:var(--y); color:var(--k); font-size:17px; min-height:64px; box-shadow:5px 5px 0 var(--c); }
   .snap:active { transform:translate(5px,5px); box-shadow:none; }
   @media (min-width:760px) { footer { max-width:440px; } }
 
@@ -88,17 +97,26 @@
     </div>
   </header>
   <div class="ret"></div>
+  <div id="hint">AIM AT GROUND // TAP TO PLACE</div>
   <footer>
-    <dl id="tele"></dl>
+    <dl id="tele" title="Tap to collapse"></dl>
     <div class="row">
       <button class="btn" id="bMode" aria-pressed="false">[ VIEW: OPS ]</button>
       <button class="btn" id="bGas" aria-pressed="false">[ CO2: OFF ]</button>
     </div>
-    <button class="btn snap" id="bSnap">[ SNAP PROOF ]</button>
+    <div class="seg" id="seg"><span>SCALE</span>
+      <button class="btn" data-s="1" aria-pressed="true">1:1</button>
+      <button class="btn" data-s="0.1" aria-pressed="false">1:10</button>
+      <button class="btn" data-s="0.01" aria-pressed="false">1:100</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="bAR" disabled>[ AR: CHECKING ]</button>
+      <button class="btn snap" id="bSnap">[ SNAP PROOF ]</button>
+    </div>
   </footer>
+  <div id="toast" role="status"></div>
 </div>
 <div id="flash"></div>
-<div id="toast" role="status"></div>
 <div id="boot">BOOTING FIELD_OPTIC…</div>
 
 <script>
@@ -109,6 +127,8 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const $ = (id) => document.getElementById(id);
 const FONT = '"JetBrains Mono","IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace';
@@ -121,6 +141,8 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(0x000000, 0);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 1, 900);
@@ -139,7 +161,8 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -75, right: 75, top: 75, bottom: -75, near: 10, far: 260 });
 sun.shadow.camera.updateProjectionMatrix();
-scene.add(sun);
+scene.add(sun, sun.target);
+const SUN_OFF = sun.position.clone();
 
 /* ================= MATERIALS + HELPERS ================= */
 const mat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, ...o });
@@ -197,7 +220,7 @@ function label(text, x, y, z, p) {
   g.font = `800 ${fs}px ${FONT}`; g.textBaseline = 'middle'; g.fillText(text, 22, c.height / 2 + 2);
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
-  s.scale.set(0.032 * c.width / c.height, 0.032, 1); s.position.set(x, y, z); s.renderOrder = 10;
+  s.scale.set(0.02 * c.width / c.height, 0.02, 1); s.position.set(x, y, z); s.renderOrder = 10;
   p.add(s); return s;
 }
 function padTexture(stone) {
@@ -240,8 +263,9 @@ function perimeter(step, gateHalf) {
 }
 
 /* ================= SITE (shared) ================= */
+const root = new THREE.Group();             // whole model; moved/scaled when placed in AR
 const site = new THREE.Group(), op = new THREE.Group(), con = new THREE.Group();
-scene.add(site, op, con);
+root.add(site, op, con); scene.add(root);
 
 const SX = 18, SZ = -14, STACK_TOP = 10;      // vent stack position / exit height (m)
 
@@ -364,6 +388,11 @@ const gasMat = new THREE.ShaderMaterial({
 });
 const gas = new THREE.Points(gasGeo, gasMat);
 gas.frustumCulled = false; op.add(gas);
+// point size in px = metres * (px per metre at 1 m); works for both the normal camera and XR views, at any model scale
+gas.onBeforeRender = (r, s, cam) => {
+  const rt = r.getRenderTarget(), h = rt ? rt.height : glCanvas.height;
+  gasMat.uniforms.uScale.value = (h * cam.projectionMatrix.elements[5] / 2) * root.scale.x;
+};
 
 const plumeRing = new THREE.LineLoop(
   new THREE.BufferGeometry().setFromPoints(Array.from({ length: 72 }, (_, i) => new THREE.Vector3(Math.cos(i / 72 * Math.PI * 2), 0, Math.sin(i / 72 * Math.PI * 2)))),
@@ -509,7 +538,10 @@ function stepWorks(dt, t) {
 }
 
 /* ================= OPTIC: rear camera or tactical grid ================= */
-let camLive = false, opticNote = 'INIT';
+let camLive = false, opticNote = 'INIT', camStream = null;
+function stopCamera() {                      // WebXR needs the camera to itself
+  camStream?.getTracks().forEach((t) => t.stop()); camStream = null; camLive = false;
+}
 function drawGrid() {
   const d = renderer.getPixelRatio(), w = (bg.width = Math.round(innerWidth * d)), h = (bg.height = Math.round(innerHeight * d));
   const c = bg.getContext('2d');
@@ -544,10 +576,10 @@ async function initOptic() {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
     });
-    video.srcObject = stream; await video.play();
+    camStream = stream; video.srcObject = stream; await video.play();
     camLive = true; opticNote = 'REAR LIVE';
     video.style.display = 'block'; bg.style.display = 'none';
-    stream.getVideoTracks()[0].addEventListener('ended', () => fallback('FEED LOST'));
+    stream.getVideoTracks()[0].addEventListener('ended', () => { if (!xrOn) fallback('FEED LOST'); });
   } catch (e) {
     fallback(e.name === 'NotAllowedError' ? 'CAM DENIED' : 'CAM UNAVAILABLE');
   }
@@ -573,8 +605,8 @@ function telemetry() {
   return [
     ['UTC', utc()],
     ['LOC', geo ? `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)} ±${Math.round(geo.accuracy)}M` : geoState],
-    ['OPTIC', camLive ? 'REAR CAMERA LIVE' : `FALLBACK GRID // ${opticNote}`],
-    ['MODE', ops ? 'OPERATIONAL AGI' : 'CONSTRUCTION PHASE'],
+    ['OPTIC', xrOn ? `WEBXR AR // ${placed ? 'PLACED ON GROUND' : 'SEEKING GROUND'}` : camLive ? 'REAR CAMERA LIVE' : `FALLBACK GRID // ${opticNote}`],
+    ['MODE', `${ops ? 'OPERATIONAL AGI' : 'CONSTRUCTION PHASE'} // SCALE ${SCALE_TXT[scale]}`],
     ops ? ['CO2', G.release ? `STACK VENTING T+${mmss(G.t)}` : G.alive ? 'VENT CLOSED // RESIDUAL' : 'STACK IDLE']
         : ['HGV', `${trucks.length} ON SITE // ${hgvMoves} GATE MOVES`],
     ops ? ['PLUME', `R ${G.r.toFixed(1)} M // ${G.gndPct}% GROUNDED // ${G.alive} PTS`]
@@ -676,12 +708,124 @@ let toastT;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); }
 $('bSnap').onclick = snap;
 
+/* ================= AR PLACEMENT ================= */
+// Android Chrome: WebXR immersive-ar + hit-test (live sim). iOS: AR Quick Look via generated USDZ (static snapshot).
+const SCALE_TXT = { 1: '1:1', 0.1: '1:10', 0.01: '1:100' };
+let scale = 1, arKind = null, xrOn = false, placed = false, hitSource = null;
+const bAR = $('bAR'), bSnap = $('bSnap'), hint = $('hint');
+const reticle = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.22, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd100 }));
+reticle.add(new THREE.Mesh(new THREE.CircleGeometry(0.03, 12).rotateX(-Math.PI / 2), reticle.material));
+reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+const anchorP = new THREE.Vector3(), anchorD = new THREE.Vector3(0, 0, 1), tmp = new THREE.Vector3();
+
+// gate-side fence edge sits on the tapped point; compound extends away from the viewer
+function placeRoot() {
+  root.scale.setScalar(scale);
+  root.rotation.y = Math.atan2(anchorD.x, anchorD.z);
+  root.position.copy(anchorP).addScaledVector(anchorD, -25 * scale);
+  sun.position.copy(root.position).addScaledVector(SUN_OFF, scale);
+  sun.target.position.copy(root.position);
+  Object.assign(sun.shadow.camera, { left: -75 * scale, right: 75 * scale, top: 75 * scale, bottom: -75 * scale, near: 10 * scale, far: 260 * scale });
+  sun.shadow.camera.updateProjectionMatrix();
+}
+function resetRoot() {                      // back to the 1:1 origin used by the orbit preview
+  const s = scale; scale = 1; anchorP.set(0, 0, 25); anchorD.set(0, 0, 1); placeRoot(); scale = s;
+}
+function setScale(s) {
+  scale = s;
+  for (const b of $('seg').querySelectorAll('.btn')) b.setAttribute('aria-pressed', String(+b.dataset.s === s));
+  if (xrOn && placed) placeRoot();
+  updateHud();
+}
+$('seg').onclick = (e) => { const b = e.target.closest('.btn'); if (b) setScale(+b.dataset.s); };
+
+async function startXR() {
+  stopCamera(); video.style.display = 'none'; bg.style.display = 'none';
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('hud') },
+    });
+    session.addEventListener('end', endXR);
+    session.addEventListener('select', () => {
+      if (!reticle.visible) return;
+      anchorP.setFromMatrixPosition(reticle.matrix);
+      tmp.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld).sub(anchorP).setY(0);
+      if (tmp.lengthSq() > 1e-6) anchorD.copy(tmp.normalize());
+      placed = true; root.visible = true; placeRoot();
+      hint.textContent = 'TAP GROUND AGAIN TO MOVE';
+    });
+    await renderer.xr.setSession(session);
+    hitSource = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
+    xrOn = true; placed = false; root.visible = false; grid.visible = false; controls.enabled = false;
+    document.body.classList.add('xr');
+    hint.textContent = 'AIM AT GROUND // TAP TO PLACE';
+    bAR.textContent = '[ EXIT AR ]'; bAR.setAttribute('aria-pressed', 'true');
+    bSnap.disabled = true; bSnap.textContent = '[ USE OS SCREENSHOT ]';
+  } catch (e) {
+    toast(`AR FAILED // ${e.name || e.message}`); endXR();
+  }
+}
+function endXR() {
+  hitSource?.cancel?.(); hitSource = null;
+  xrOn = false; placed = false; root.visible = true; grid.visible = true; controls.enabled = true; reticle.visible = false;
+  document.body.classList.remove('xr');
+  resetRoot();
+  bAR.textContent = '[ PLACE IN AR ]'; bAR.setAttribute('aria-pressed', 'false');
+  bSnap.disabled = false; bSnap.textContent = '[ SNAP PROOF ]';
+  fallback('ACQUIRING'); initOptic(); resize();
+}
+// buttons inside the DOM overlay must not also count as "tap to place"
+document.querySelector('footer').addEventListener('beforexrselect', (e) => { if (e.target.closest('.btn, #tele')) e.preventDefault(); });
+$('tele').onclick = () => $('tele').classList.toggle('min');
+
+// iOS: bake the visible model (instances merged, static plume volume) into a USDZ and open AR Quick Look
+async function quickLook() {
+  bAR.disabled = true; bAR.textContent = '[ BUILDING USDZ… ]';
+  try {
+    const out = new THREE.Group(), m4 = new THREE.Matrix4();
+    root.updateMatrixWorld(true);
+    for (const g of [site, mode === 'op' ? op : con]) g.traverse((o) => {
+      if (!o.isMesh) return;
+      let geo = o.geometry;
+      if (o.isInstancedMesh) {
+        const parts = [];
+        for (let i = 0; i < o.count; i++) { o.getMatrixAt(i, m4); parts.push(o.geometry.clone().applyMatrix4(m4)); }
+        geo = mergeGeometries(parts);
+      }
+      const mesh = new THREE.Mesh(geo, o.material); mesh.applyMatrix4(o.matrixWorld); out.add(mesh);
+    });
+    if (mode === 'op' && G.r > 1) {          // freeze current simulated ground plume as a translucent slab
+      const slab = new THREE.Mesh(new THREE.CylinderGeometry(G.r, G.r, 1.2, 48),
+        new THREE.MeshStandardMaterial({ color: 0xe0e8ec, transparent: true, opacity: 0.35 }));
+      slab.position.set(SX, 0.6, SZ); out.add(slab);
+    }
+    const wrap = new THREE.Group(); wrap.add(out); wrap.scale.setScalar(scale);
+    const data = await new USDZExporter().parse(wrap, { quickLookCompatible: true });
+    const a = document.createElement('a');
+    a.rel = 'ar'; a.download = 'aaccs.usdz';
+    a.href = URL.createObjectURL(new Blob([data], { type: 'model/vnd.usdz+zip' })) + '#allowsContentScaling=0';
+    a.appendChild(document.createElement('img'));
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) {
+    toast(`USDZ FAILED // ${e.message}`);
+  }
+  bAR.disabled = false; bAR.textContent = '[ OPEN IN AR ]';
+}
+
+bAR.onclick = () => { if (arKind === 'webxr') xrOn ? renderer.xr.getSession()?.end() : startXR(); else if (arKind === 'quicklook') quickLook(); };
+(async () => {
+  try { if (await navigator.xr?.isSessionSupported('immersive-ar')) arKind = 'webxr'; } catch {}
+  if (!arKind && document.createElement('a').relList?.supports?.('ar')) arKind = 'quicklook';
+  bAR.disabled = !arKind;
+  bAR.textContent = arKind === 'webxr' ? '[ PLACE IN AR ]' : arKind === 'quicklook' ? '[ OPEN IN AR ]' : '[ AR: N/A HERE ]';
+})();
+
 /* ================= LOOP ================= */
 function resize() {
+  if (renderer.xr.isPresenting) return;
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h; camera.updateProjectionMatrix();
-  gasMat.uniforms.uScale.value = (h * renderer.getPixelRatio()) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
   if (!camLive) drawGrid();
 }
 addEventListener('resize', resize);
@@ -689,9 +833,13 @@ resize();
 setMode('op');
 
 const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
+renderer.setAnimationLoop((time, frame) => {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
-  controls.update();
+  if (frame && hitSource) {
+    const hit = frame.getHitTestResults(hitSource)[0], pose = hit?.getPose(renderer.xr.getReferenceSpace());
+    reticle.visible = !!pose;
+    if (pose) reticle.matrix.fromArray(pose.transform.matrix);
+  } else if (!xrOn) controls.update();
   if (mode === 'op') stepGas(dt, t); else stepWorks(dt, t);
   renderer.render(scene, camera);
 });
