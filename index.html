@@ -619,7 +619,8 @@ function telemetry() {
 function updateHud() {
   $('clk').textContent = utc().slice(11);
   const o = $('sOptic'), g = $('sGeo');
-  o.textContent = `OPTIC: ${camLive ? 'REAR LIVE' : 'FALLBACK'}`; o.classList.toggle('warn', !camLive);
+  o.textContent = `OPTIC: ${xrOn ? 'AR' : camLive ? 'REAR LIVE' : arKind ? 'AR STANDBY' : 'FALLBACK'}`;
+  o.classList.toggle('warn', !camLive && !xrOn && !arKind);
   g.textContent = `GEO: ${geo ? `±${Math.round(geo.accuracy)}M` : geoState}`; g.classList.toggle('warn', !geo);
   $('tele').innerHTML = telemetry().map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   if (xrOn) hint.innerHTML = `${hint.dataset.msg || ''}<small>${dbgLine()}</small>`;
@@ -791,7 +792,7 @@ function endXR() {
   if (camSave.p.lengthSq()) { camera.position.copy(camSave.p); camera.quaternion.copy(camSave.q); camera.fov = 50; camera.updateProjectionMatrix(); controls.update(); }
   bAR.textContent = '[ PLACE IN AR ]'; bAR.setAttribute('aria-pressed', 'false');
   bSnap.disabled = false; bSnap.textContent = '[ SNAP PROOF ]';
-  fallback('ACQUIRING'); initOptic(); resize();
+  fallback('AR STANDBY'); resize();
 }
 // buttons inside the DOM overlay must not also count as "tap to place"
 document.querySelector('footer').addEventListener('beforexrselect', (e) => { if (e.target.closest('.btn, #tele')) e.preventDefault(); });
@@ -832,11 +833,12 @@ async function quickLook() {
 }
 
 bAR.onclick = () => { if (arKind === 'webxr') xrOn ? renderer.xr.getSession()?.end() : startXR(); else if (arKind === 'quicklook') quickLook(); };
-(async () => {
+const arReady = (async () => {
   try { if (await navigator.xr?.isSessionSupported('immersive-ar')) arKind = 'webxr'; } catch {}
   if (!arKind && document.createElement('a').relList?.supports?.('ar')) arKind = 'quicklook';
   bAR.disabled = !arKind;
   bAR.textContent = arKind === 'webxr' ? '[ PLACE IN AR ]' : arKind === 'quicklook' ? '[ OPEN IN AR ]' : '[ AR: N/A HERE ]';
+  return arKind;
 })();
 
 /* ================= LOOP ================= */
@@ -868,8 +870,10 @@ renderer.setAnimationLoop((time, frame) => {
 setInterval(updateHud, 250);
 
 window.AACCS_UP = true; $('boot').remove();
-fallback('ACQUIRING');                       // grid shows instantly; replaced if the camera comes up
-initOptic().finally(initGeo);
+// AR-capable phones never open the camera feed: the camera stays free for WebXR / Quick Look.
+// The live camera overlay is only used where AR isn't available.
+fallback('ACQUIRING');
+arReady.then((k) => (k ? fallback('AR STANDBY') : initOptic())).finally(initGeo);
 </script>
 </body>
 </html>
