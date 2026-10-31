@@ -51,6 +51,7 @@
   .seg .btn + .btn { border-left:3px solid var(--y); }
   #hint { display:none; align-self:center; background:var(--y); color:var(--k); font-weight:800; font-size:13px; padding:8px 12px; }
   body.xr #hint { display:block; }
+  #hint small { display:block; margin-top:4px; font-size:9.5px; font-weight:700; line-height:1.4; }
   body.xr .ret { display:none; }
   .btn { pointer-events:auto; touch-action:manipulation; font:inherit; font-weight:800; font-size:13px; letter-spacing:.06em;
          text-transform:uppercase; min-height:52px; padding:0 8px; border-radius:0; cursor:pointer;
@@ -621,6 +622,7 @@ function updateHud() {
   o.textContent = `OPTIC: ${camLive ? 'REAR LIVE' : 'FALLBACK'}`; o.classList.toggle('warn', !camLive);
   g.textContent = `GEO: ${geo ? `±${Math.round(geo.accuracy)}M` : geoState}`; g.classList.toggle('warn', !geo);
   $('tele').innerHTML = telemetry().map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  if (xrOn) hint.innerHTML = `${hint.dataset.msg || ''}<small>${dbgLine()}</small>`;
 }
 
 /* ================= CONTROLS ================= */
@@ -717,6 +719,19 @@ const reticle = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.22, 32).rotateX(-M
 reticle.add(new THREE.Mesh(new THREE.CircleGeometry(0.03, 12).rotateX(-Math.PI / 2), reticle.material));
 reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 const anchorP = new THREE.Vector3(), anchorD = new THREE.Vector3(0, 0, 1), tmp = new THREE.Vector3();
+// on-screen AR diagnostics (field debugging without devtools)
+const dbg = { hits: 0, frames: 0, selects: 0, err: '' };
+addEventListener('error', (e) => { dbg.err = e.message; });
+addEventListener('unhandledrejection', (e) => { dbg.err = String(e.reason?.message || e.reason); });
+const hintMsg = (msg) => { hint.dataset.msg = msg; };
+function dbgLine() {
+  const cam = tmp.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+  const d = placed ? cam.distanceTo(anchorP).toFixed(1) : '-';
+  return `GROUND ${dbg.hits ? 'LOCK' : 'NONE'} // FRAMES ${dbg.frames} // TAPS ${dbg.selects}<br>` +
+    `PLACED ${placed ? 'Y' : 'N'} // EDGE ${d} M // ROOT ${root.position.toArray().map((v) => v.toFixed(1)).join(',')} // S ${root.scale.x}` +
+    (dbg.err ? `<br>ERR ${dbg.err}` : '');
+}
+const camSave = { p: new THREE.Vector3(), q: new THREE.Quaternion() };
 
 // gate-side fence edge sits on the tapped point; compound extends away from the viewer
 function placeRoot() {
@@ -747,18 +762,21 @@ async function startXR() {
     });
     session.addEventListener('end', endXR);
     session.addEventListener('select', () => {
-      if (!reticle.visible) return;
+      dbg.selects++;
+      if (!reticle.visible) return toast('NO GROUND LOCK // MOVE PHONE SLOWLY OVER THE GROUND');
       anchorP.setFromMatrixPosition(reticle.matrix);
       tmp.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld).sub(anchorP).setY(0);
       if (tmp.lengthSq() > 1e-6) anchorD.copy(tmp.normalize());
       placed = true; root.visible = true; placeRoot();
-      hint.textContent = 'TAP GROUND AGAIN TO MOVE';
+      hintMsg('TAP GROUND AGAIN TO MOVE');
     });
+    camSave.p.copy(camera.position); camSave.q.copy(camera.quaternion);
+    Object.assign(dbg, { hits: 0, frames: 0, selects: 0, err: '' });
     await renderer.xr.setSession(session);
     hitSource = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
     xrOn = true; placed = false; root.visible = false; grid.visible = false; controls.enabled = false;
     document.body.classList.add('xr');
-    hint.textContent = 'AIM AT GROUND // TAP TO PLACE';
+    hintMsg('AIM AT GROUND // TAP TO PLACE');
     bAR.textContent = '[ EXIT AR ]'; bAR.setAttribute('aria-pressed', 'true');
     bSnap.disabled = true; bSnap.textContent = '[ USE OS SCREENSHOT ]';
   } catch (e) {
@@ -770,6 +788,7 @@ function endXR() {
   xrOn = false; placed = false; root.visible = true; grid.visible = true; controls.enabled = true; reticle.visible = false;
   document.body.classList.remove('xr');
   resetRoot();
+  if (camSave.p.lengthSq()) { camera.position.copy(camSave.p); camera.quaternion.copy(camSave.q); camera.fov = 50; camera.updateProjectionMatrix(); controls.update(); }
   bAR.textContent = '[ PLACE IN AR ]'; bAR.setAttribute('aria-pressed', 'false');
   bSnap.disabled = false; bSnap.textContent = '[ SNAP PROOF ]';
   fallback('ACQUIRING'); initOptic(); resize();
@@ -835,13 +854,16 @@ setMode('op');
 const clock = new THREE.Clock();
 renderer.setAnimationLoop((time, frame) => {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
-  if (frame && hitSource) {
-    const hit = frame.getHitTestResults(hitSource)[0], pose = hit?.getPose(renderer.xr.getReferenceSpace());
-    reticle.visible = !!pose;
-    if (pose) reticle.matrix.fromArray(pose.transform.matrix);
-  } else if (!xrOn) controls.update();
-  if (mode === 'op') stepGas(dt, t); else stepWorks(dt, t);
-  renderer.render(scene, camera);
+  try {
+    if (frame) dbg.frames++;
+    if (frame && hitSource) {
+      const hits = frame.getHitTestResults(hitSource), pose = hits[0]?.getPose(renderer.xr.getReferenceSpace());
+      dbg.hits = hits.length; reticle.visible = !!pose;
+      if (pose) reticle.matrix.fromArray(pose.transform.matrix);
+    } else if (!xrOn) controls.update();
+    if (mode === 'op') stepGas(dt, t); else stepWorks(dt, t);
+    renderer.render(scene, camera);
+  } catch (e) { dbg.err = e.message; }
 });
 setInterval(updateHud, 250);
 
